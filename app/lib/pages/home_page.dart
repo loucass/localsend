@@ -11,6 +11,7 @@ import 'package:localsend_app/pages/tabs/send_tab.dart';
 import 'package:localsend_app/pages/tabs/settings_tab.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/cross_file_converters.dart';
+import 'package:localsend_app/util/native/file_transfer_portal.dart';
 import 'package:localsend_app/widget/responsive_builder.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 
@@ -55,15 +56,31 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with Refena {
   bool _dragAndDropIndicator = false;
+  FileTransferPortal? _fileTransferPortal;
 
   @override
   void initState() {
     super.initState();
 
+    // Initialize the FileTransfer portal client for drag-and-drop on Flatpak/Wayland
+    FileTransferPortal.create().then((portal) {
+      if (mounted) {
+        setState(() {
+          _fileTransferPortal = portal;
+        });
+      }
+    });
+
     ensureRef((ref) async {
       ref.redux(homePageControllerProvider).dispatch(ChangeTabAction(widget.initialTab));
       await postInit(context, ref, widget.appStart);
     });
+  }
+
+  @override
+  void dispose() {
+    _fileTransferPortal?.dispose();
+    super.dispose();
   }
 
   @override
@@ -83,9 +100,18 @@ class _HomePageState extends State<HomePage> with Refena {
         });
       },
       onDragDone: (event) async {
+        // On Flatpak/Wayland, use the FileTransfer portal to get accessible file paths
+        List<DropItem> filesToProcess;
+        if (_fileTransferPortal != null && event is DropDoneDetails && event.rawText != null) {
+          final portalPaths = await extractFilePaths(event.rawText!, portal: _fileTransferPortal);
+          filesToProcess = portalPaths.map((p) => DropItemFile(p)).toList();
+        } else {
+          filesToProcess = event.files;
+        }
+
         // the drop may contain a mix of files and directories
-        final droppedDirectories = event.files.where((file) => Directory(file.path).existsSync()).toList();
-        final droppedFiles = event.files.where((file) => !Directory(file.path).existsSync()).toList();
+        final droppedDirectories = filesToProcess.where((file) => Directory(file.path).existsSync()).toList();
+        final droppedFiles = filesToProcess.where((file) => !Directory(file.path).existsSync()).toList();
 
         for (final directory in droppedDirectories) {
           await ref.redux(selectedSendingFilesProvider).dispatchAsync(AddDirectoryAction(directory.path));
